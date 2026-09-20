@@ -1,0 +1,365 @@
+package main
+
+import (
+	"encoding/json"
+	"flag"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+func main() {
+	portFlag := flag.Int("port", 8080, "Port to listen on")
+	listenFlag := flag.String("listen", "0.0.0.0", "IP address to listen on")
+	kbRootFlag := flag.String("kb", "", "Path to knowledge base root directory (default: auto-detected)")
+	portalsFlag := flag.String("portals", "", "Path to portals directory (default: {kb}/portals)")
+
+	flag.Parse()
+
+	kbRoot := *kbRootFlag
+	if kbRoot == "" {
+		if env := os.Getenv("KB_ROOT"); env != "" {
+			kbRoot = env
+		} else {
+			if _, err := os.Stat("INDEX.md"); err == nil {
+				kbRoot = "."
+			} else if _, err := os.Stat("../INDEX.md"); err == nil {
+				kbRoot = ".."
+			} else {
+				kbRoot = "/home/gekkasayu/knowledge-base"
+			}
+		}
+	}
+	absKBRoot, err := filepath.Abs(kbRoot)
+	if err != nil {
+		log.Fatalf("Invalid KB root path: %v", err)
+	}
+
+	portalsDir := *portalsFlag
+	if portalsDir == "" {
+		if env := os.Getenv("PORTALS_DIR"); env != "" {
+			portalsDir = env
+		} else {
+			portalsDir = filepath.Join(absKBRoot, "portals")
+		}
+	}
+	absPortalsDir, err := filepath.Abs(portalsDir)
+	if err != nil {
+		log.Fatalf("Invalid portals path: %v", err)
+	}
+
+	listenAddr := fmt.Sprintf("%s:%d", *listenFlag, *portFlag)
+
+	log.Printf("==================================================")
+	log.Printf("   Knowledge Base Multi-Portal Server (kb-server) ")
+	log.Printf("==================================================")
+	log.Printf("📖 Master KB Root : %s", absKBRoot)
+	log.Printf("🚪 Portals Directory: %s", absPortalsDir)
+	log.Printf("🌐 Listen Address   : http://%s", listenAddr)
+
+	mgr := NewPortalManager(absKBRoot, absPortalsDir)
+	if err := mgr.ScanAndLoad(); err != nil {
+		log.Fatalf("Failed to scan portals: %v", err)
+	}
+
+	mux := http.NewServeMux()
+
+	// 1. Global Search API: searches the entire master KB once
+	mux.HandleFunc("/api/search", func(rw http.ResponseWriter, req *http.Request) {
+		q := req.URL.Query().Get("q")
+		resp, err := SearchKB(absKBRoot, nil, q, 100)
+		if err != nil {
+			http.Error(rw, fmt.Sprintf(`{"error":"Search failed: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(rw).Encode(resp)
+	})
+
+	// 2. Portals listing API
+	mux.HandleFunc("/api/portals", func(rw http.ResponseWriter, req *http.Request) {
+		portals := mgr.ListPortals()
+		type PortalInfo struct {
+			Name        string   `json:"name"`
+			FilesCount  int      `json:"files_count"`
+			EntryURL    string   `json:"entry_url"`
+			UploadURL   string   `json:"upload_url"`
+			SearchURL   string   `json:"search_url"`
+			SampleFiles []string `json:"sample_files"`
+		}
+		var list []PortalInfo
+		for _, p := range portals {
+			files := p.GetFileList()
+			samples := files
+			if len(samples) > 5 {
+				samples = samples[:5]
+			}
+			list = append(list, PortalInfo{
+				Name:        p.Name,
+				FilesCount:  len(files),
+				EntryURL:    fmt.Sprintf("/%s/", p.Name),
+				UploadURL:   fmt.Sprintf("/%s/upload", p.Name),
+				SearchURL:   fmt.Sprintf("/%s/search", p.Name),
+				SampleFiles: samples,
+			})
+		}
+		rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(rw).Encode(map[string]interface{}{
+			"total_portals": len(list),
+			"portals":       list,
+		})
+	})
+
+	// 3. Portals reload API
+	mux.HandleFunc("/api/portals/reload", func(rw http.ResponseWriter, req *http.Request) {
+		if err := mgr.ScanAndLoad(); err != nil {
+			http.Error(rw, fmt.Sprintf(`{"error":"Reload failed: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(rw).Encode(map[string]interface{}{
+			"status":  "ok",
+			"message": "All portals reloaded successfully from disk.",
+		})
+	})
+
+	// 4. S3-Style Dual Routing (Domain-style & Path-style bucketing) + Root Dashboard
+	mux.HandleFunc("/", func(rw http.ResponseWriter, req *http.Request) {
+		// S3-style bucketing resolution
+		if portal, subPath, ok := mgr.ResolvePortalAndSubpath(req); ok {
+			handlePortalRequest(portal, absKBRoot, subPath, rw, req)
+			return
+		}
+
+		path := strings.TrimPrefix(req.URL.Path, "/")
+		if path == "" {
+			// Global dashboard
+			portals := mgr.ListPortals()
+			rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprintf(rw, `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>KB Multi-Portal Server</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; line-height: 1.6; background: #fafafa; color: #333; }
+h1, h2 { color: #111; }
+.card { background: #fff; border: 1px solid #e1e4e8; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
+a { color: #0366d6; text-decoration: none; font-weight: 500; }
+a:hover { text-decoration: underline; }
+code { background: #f6f8fa; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; font-family: monospace; }
+.tag { display: inline-block; background: #e1f5fe; color: #0277bd; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; margin-left: 8px; }
+.search-box { display: flex; gap: 10px; margin: 20px 0; }
+.search-box input { flex: 1; padding: 10px 14px; font-size: 16px; border: 1px solid #ccc; border-radius: 6px; }
+.search-box button { padding: 10px 20px; font-size: 16px; background: #2ea44f; color: white; border: none; border-radius: 6px; cursor: pointer; }
+</style>
+</head>
+<body>
+<h1>📚 知识库多入口服务 (KB Multi-Portal)</h1>
+<p>S3 风格双模式分桶：既支持 <code>/&lt;portal&gt;/...</code> Path 分桶，也支持 <code>&lt;portal&gt;.domain/...</code> 域名分桶。</p>
+
+<div class="card">
+  <h2>🔍 全局知识库搜索 (Unified Search)</h2>
+  <form action="/api/search" method="GET" class="search-box">
+    <input type="text" name="q" placeholder="在全库所有 Markdown 笔记中搜索关键字..." required />
+    <button type="submit">搜索全库</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>🚪 已激活的入口 (Portals / Buckets)</h2>
+  <ul>`)
+			for _, p := range portals {
+				files := p.GetFileList()
+				fmt.Fprintf(rw, `<li>
+				<a href="/%s/"><strong>%s</strong></a> <span class="tag">%d 个受限文件</span>
+				<ul>
+					<li>Path 分桶入口: <code>/%s/</code></li>
+					<li>Domain 分桶格式: <code>%s.&lt;host&gt;/</code></li>
+					<li><a href="/%s/AGENTS.md">AGENTS.md (守则)</a> | <a href="/%s/INDEX.md">INDEX.md (索引)</a> | <a href="/%s/filelist.txt">filelist.txt</a></li>
+					<li>上传接口: <code>POST /%s/upload</code></li>
+				</ul>
+				</li><br>`, p.Name, p.Name, len(files), p.Name, p.Name, p.Name, p.Name, p.Name, p.Name)
+			}
+			fmt.Fprintf(rw, `</ul>
+</div>
+</body>
+</html>`)
+			return
+		}
+
+		http.Error(rw, fmt.Sprintf(`{"error":"Not Found: '%s' is neither an API endpoint nor a valid portal bucket."}`, req.URL.Path), http.StatusNotFound)
+	})
+
+	server := &http.Server{
+		Addr:         listenAddr,
+		Handler:      mux,
+		ReadTimeout:  60 * time.Second,
+		WriteTimeout: 60 * time.Second,
+	}
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("Server failed: %v", err)
+	}
+}
+
+func handlePortalRequest(portal *Portal, kbRoot, subPath string, rw http.ResponseWriter, req *http.Request) {
+	// 1. Fixed Path Entrance: GET /{portal}/ or GET /{portal}/entry
+	if subPath == "" || subPath == "entry" {
+		if req.URL.Query().Get("format") == "json" || strings.Contains(req.Header.Get("Accept"), "application/json") {
+			rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+			agentsContent, _ := os.ReadFile(portal.AgentsPath)
+			indexContent, _ := os.ReadFile(portal.IndexPath)
+			_ = json.NewEncoder(rw).Encode(map[string]interface{}{
+				"portal":       portal.Name,
+				"agents_rules": string(agentsContent),
+				"index":        string(indexContent),
+				"files":        portal.GetFileList(),
+				"upload_url":   fmt.Sprintf("/%s/upload", portal.Name),
+			})
+			return
+		}
+
+		rw.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		md := FormatPortalEntryMarkdown(portal, kbRoot)
+		_, _ = rw.Write([]byte(md))
+		return
+	}
+
+	// 2. Direct guide files: AGENTS.md, INDEX.md, filelist.txt
+	if subPath == "AGENTS.md" {
+		http.ServeFile(rw, req, portal.AgentsPath)
+		return
+	}
+	if subPath == "INDEX.md" {
+		http.ServeFile(rw, req, portal.IndexPath)
+		return
+	}
+	if subPath == "filelist.txt" {
+		http.ServeFile(rw, req, portal.FileListPath)
+		return
+	}
+
+	// 3. Fixed Upload Entrance: POST /{portal}/upload
+	if subPath == "upload" {
+		HandlePortalUpload(portal, rw, req)
+		return
+	}
+
+	// 4. Portal Scoped Search & RAG: GET /{portal}/search?q=... or GET /{portal}/rag?q=...
+	if subPath == "search" {
+		q := req.URL.Query().Get("q")
+		resp, err := SearchKB(kbRoot, portal, q, 50)
+		if err != nil {
+			http.Error(rw, fmt.Sprintf(`{"error":"Portal search failed: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(rw).Encode(resp)
+		return
+	}
+
+	if subPath == "rag" {
+		q := req.URL.Query().Get("q")
+		if q == "" {
+			// Without query: return portal RAG entry guide
+			rw.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+			_, _ = rw.Write([]byte(FormatPortalEntryMarkdown(portal, kbRoot)))
+			return
+		}
+
+		// Strictly retrieves snippets ONLY from files listed in filelist.txt
+		ragResp, err := RAGSearch(kbRoot, portal, q, 30)
+		if err != nil {
+			http.Error(rw, fmt.Sprintf(`{"error":"RAG search failed: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+
+		if req.URL.Query().Get("format") == "json" || strings.Contains(req.Header.Get("Accept"), "application/json") {
+			rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+			_ = json.NewEncoder(rw).Encode(ragResp)
+			return
+		}
+
+		rw.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		_, _ = rw.Write([]byte(ragResp.ContextText))
+		return
+	}
+
+	// 5. Uploads directory access: GET /{portal}/uploads or GET /{portal}/uploads/...
+	if strings.HasPrefix(subPath, "uploads") {
+		uploadFile := strings.TrimPrefix(subPath, "uploads")
+		uploadFile = strings.TrimPrefix(uploadFile, "/")
+		if uploadFile == "" {
+			entries, _ := os.ReadDir(portal.UploadDir)
+			var list []map[string]interface{}
+			for _, e := range entries {
+				info, _ := e.Info()
+				list = append(list, map[string]interface{}{
+					"name":       e.Name(),
+					"size_bytes": info.Size(),
+					"mod_time":   info.ModTime().Format(time.RFC3339),
+					"url":        fmt.Sprintf("/%s/uploads/%s", portal.Name, e.Name()),
+				})
+			}
+			rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+			_ = json.NewEncoder(rw).Encode(map[string]interface{}{
+				"portal":  portal.Name,
+				"total":   len(list),
+				"uploads": list,
+			})
+			return
+		}
+
+		cleanTarget := filepath.Join(portal.UploadDir, filepath.Base(uploadFile))
+		http.ServeFile(rw, req, cleanTarget)
+		return
+	}
+
+	// 6. Path-based full-text serving: Path MUST match filelist.txt to serve full text!
+	// Supports direct path (e.g. /{portal}/notes/xxx.md) or /{portal}/file/notes/xxx.md
+	targetRel := subPath
+	if strings.HasPrefix(targetRel, "file/") {
+		targetRel = strings.TrimPrefix(targetRel, "file/")
+	} else if strings.HasPrefix(targetRel, "raw/") {
+		targetRel = strings.TrimPrefix(targetRel, "raw/")
+	}
+	targetRel = strings.TrimPrefix(targetRel, "/")
+
+	// Security check: ONLY serve full text if path matches filelist.txt!
+	if !portal.IsFileAllowed(targetRel) {
+		rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+		rw.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(rw).Encode(map[string]interface{}{
+			"error":     "Forbidden",
+			"message":   fmt.Sprintf("Access denied: path '%s' does not match '%s/filelist.txt'. Full text cannot be served.", targetRel, portal.Name),
+			"portal":    portal.Name,
+			"requested": targetRel,
+		})
+		return
+	}
+
+	// Resolve target file in knowledge base root
+	targetAbs := filepath.Join(kbRoot, filepath.FromSlash(targetRel))
+	if !strings.HasPrefix(filepath.Clean(targetAbs), filepath.Clean(kbRoot)) {
+		http.Error(rw, `{"error":"Directory traversal forbidden"}`, http.StatusForbidden)
+		return
+	}
+
+	// Check if file exists; if not, try appending .md
+	if _, err := os.Stat(targetAbs); os.IsNotExist(err) {
+		if _, errMD := os.Stat(targetAbs + ".md"); errMD == nil {
+			targetAbs = targetAbs + ".md"
+		} else {
+			http.Error(rw, fmt.Sprintf(`{"error":"File '%s' not found on server"}`, targetRel), http.StatusNotFound)
+			return
+		}
+	}
+
+	rw.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	http.ServeFile(rw, req, targetAbs)
+}

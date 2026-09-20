@@ -1,0 +1,22 @@
+# Exclude all markdown files (private knowledge base notes & docs)
+*.md
+**/*.md
+
+# Exclude knowledge base data & portal directories
+notes/
+indexes/
+portals/
+tools/
+
+# Exclude compiled binaries & archives
+kb-server
+server/kb-server
+*.exe
+*.test
+*.tar.gz
+*.zip
+
+# System & IDE files
+.DS_Store
+.vscode/
+.idea/
