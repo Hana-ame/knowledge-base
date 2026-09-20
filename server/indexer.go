@@ -98,16 +98,30 @@ func FormatPortalEntryMarkdown(portal *Portal, kbRoot string) string {
 	}
 	sb.WriteString("\n")
 
-	sb.WriteString("## 4. API 端点操作指南\n\n")
-	sb.WriteString("### 读取单个文件 (严格限制在子集内):\n")
-	sb.WriteString(fmt.Sprintf("```bash\ncurl http://<host>:%s/%s/file/<relPath>\n```\n\n", "8080", portal.Name))
+	sb.WriteString("## 4. Agent 交互入口与 API 操作指南\n\n")
 
-	sb.WriteString("### 入口子集内搜索:\n")
-	sb.WriteString(fmt.Sprintf("```bash\ncurl \"http://<host>:%s/%s/search?q=<keyword>\"\n```\n\n", "8080", portal.Name))
+	sb.WriteString("### 4.1 Agent 初始提示词/上下文注入入口 (System Prompt Entry):\n")
+	sb.WriteString("- **URL**: `GET /{portal}/` 或 `GET /{portal}/entry`\n")
+	sb.WriteString("- **说明**: 获取当前入口的完整约束文档（包含守则、索引与授权清单）。若需要结构化 JSON 数据，请附加 Header `Accept: application/json` 或参数 `?format=json`。\n\n")
 
-	sb.WriteString("### 固定上传入口 (回传经验教训优化知识库):\n")
-	sb.WriteString("使用过此入口的 Agent 或人类可将实测总结、采坑教训或补充材料直接回传：\n\n")
-	sb.WriteString(fmt.Sprintf("```bash\n# 1. 直接上传 Markdown / 文本:\ncurl -X POST \"http://<host>:%s/%s/upload?filename=lesson-learned.md\" \\\n  -H \"Content-Type: text/markdown\" \\\n  --data-binary @my-experience.md\n\n# 2. JSON 结构化上传:\ncurl -X POST \"http://<host>:%s/%s/upload\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"title\":\"测试采坑记录\",\"content\":\"...\"}'\n```\n\n", "8080", portal.Name, "8080", portal.Name))
+	sb.WriteString("### 4.2 RAG 智能检索问答入口 (Scoped RAG Context):\n")
+	sb.WriteString("- **URL**: `GET /{portal}/rag?q=<查询问题>`\n")
+	sb.WriteString("- **说明**: 严格限制仅在当前入口的 `filelist.txt` 文件子集内做切片检索，直接返回可拼入 Agent 上下文的 Markdown 引用段落，绝不越界暴露未授权知识。\n")
+	sb.WriteString(fmt.Sprintf("```bash\ncurl \"http://<host>:8080/%s/rag?q=如何处理超时问题\"\n```\n\n", portal.Name))
+
+	sb.WriteString("### 4.3 读取授权知识库文档原文 (Direct Full-Text Read):\n")
+	sb.WriteString("- **URL**: `GET /{portal}/<相对路径>` 或 `GET /{portal}/file/<相对路径>`\n")
+	sb.WriteString("- **说明**: 仅当路径命中 `filelist.txt` 白名单时返回原文；未命中或越界尝试将直接返回 `403 Forbidden`。\n")
+	sb.WriteString(fmt.Sprintf("```bash\ncurl http://<host>:8080/%s/notes/sop-session-task-execution.md\n```\n\n", portal.Name))
+
+	sb.WriteString("### 4.4 关键字列表搜索入口 (Keyword Search):\n")
+	sb.WriteString("- **URL**: `GET /{portal}/search?q=<关键词>`\n")
+	sb.WriteString(fmt.Sprintf("```bash\ncurl \"http://<host>:8080/%s/search?q=cache\"\n```\n\n", portal.Name))
+
+	sb.WriteString("### 4.5 固定经验教训回传入口 (Lessons Learned Upload):\n")
+	sb.WriteString("- **URL**: `POST /{portal}/upload`\n")
+	sb.WriteString("- **说明**: 任何 Agent 在执行过程中发现的新坑、知识纠错或总结，均应通过此接口自动回传沉淀。\n")
+	sb.WriteString(fmt.Sprintf("```bash\n# 方式 1: 直接上传 Markdown 文件\ncurl -X POST \"http://<host>:8080/%s/upload?filename=agent-lesson.md\" \\\n  -H \"Content-Type: text/markdown\" \\\n  --data-binary @lesson.md\n\n# 方式 2: JSON 结构化上传\ncurl -X POST \"http://<host>:8080/%s/upload\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"title\":\"XX服务排查教训\",\"content\":\"具体经验总结...\"}'\n```\n\n", portal.Name, portal.Name))
 
 	return sb.String()
 }

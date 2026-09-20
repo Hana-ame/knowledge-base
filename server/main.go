@@ -178,14 +178,56 @@ code { background: #f6f8fa; padding: 2px 6px; border-radius: 4px; font-size: 0.9
 				fmt.Fprintf(rw, `<li>
 				<a href="/%s/"><strong>%s</strong></a> <span class="tag">%d 个受限文件</span>
 				<ul>
-					<li>Path 分桶入口: <code>/%s/</code></li>
-					<li>Domain 分桶格式: <code>%s.&lt;host&gt;/</code></li>
-					<li><a href="/%s/AGENTS.md">AGENTS.md (守则)</a> | <a href="/%s/INDEX.md">INDEX.md (索引)</a> | <a href="/%s/filelist.txt">filelist.txt</a></li>
-					<li>上传接口: <code>POST /%s/upload</code></li>
+					<li>🤖 Agent 上下文/入口指南: <code><a href="/%s/">GET /%s/</a></code> (自动组合守则、索引与授权清单)</li>
+					<li>🔍 RAG 检索入口: <code><a href="/%s/rag?q=test">GET /%s/rag?q=...</a></code> (仅限当前入口白名单切片)</li>
+					<li>📑 规范文档: <a href="/%s/AGENTS.md">AGENTS.md (守则)</a> | <a href="/%s/INDEX.md">INDEX.md (索引)</a> | <a href="/%s/filelist.txt">filelist.txt</a></li>
+					<li>📤 经验上传入口: <code>POST /%s/upload</code> (沉淀至 uploads/)</li>
+					<li>🌐 Domain 分桶访问: <code>http://%s.&lt;host&gt;/</code></li>
 				</ul>
-				</li><br>`, p.Name, p.Name, len(files), p.Name, p.Name, p.Name, p.Name, p.Name, p.Name)
+				</li><br>`, p.Name, p.Name, len(files), p.Name, p.Name, p.Name, p.Name, p.Name, p.Name, p.Name, p.Name, p.Name)
 			}
 			fmt.Fprintf(rw, `</ul>
+</div>
+
+<div class="card">
+  <h2>🤖 Agent 专用入口操作速查 (Agent Quick Reference)</h2>
+  <p>外部 AI Agent 或自动化脚本接入某入口时的固定端点：</p>
+  <table style="width: 100%%; border-collapse: collapse; margin-top: 10px;">
+    <thead>
+      <tr style="background: #f6f8fa; text-align: left;">
+        <th style="padding: 8px; border: 1px solid #e1e4e8;">功能</th>
+        <th style="padding: 8px; border: 1px solid #e1e4e8;">Path 分桶模式</th>
+        <th style="padding: 8px; border: 1px solid #e1e4e8;">Domain 分桶模式</th>
+        <th style="padding: 8px; border: 1px solid #e1e4e8;">返回格式</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="padding: 8px; border: 1px solid #e1e4e8;"><strong>1. 注入 Agent 上下文</strong></td>
+        <td style="padding: 8px; border: 1px solid #e1e4e8;"><code>GET /{portal}/</code></td>
+        <td style="padding: 8px; border: 1px solid #e1e4e8;"><code>GET /</code></td>
+        <td style="padding: 8px; border: 1px solid #e1e4e8;">Markdown / JSON</td>
+      </tr>
+      <tr>
+        <td style="padding: 8px; border: 1px solid #e1e4e8;"><strong>2. RAG 知识检索</strong></td>
+        <td style="padding: 8px; border: 1px solid #e1e4e8;"><code>GET /{portal}/rag?q=...</code></td>
+        <td style="padding: 8px; border: 1px solid #e1e4e8;"><code>GET /rag?q=...</code></td>
+        <td style="padding: 8px; border: 1px solid #e1e4e8;">Markdown 上下文片段</td>
+      </tr>
+      <tr>
+        <td style="padding: 8px; border: 1px solid #e1e4e8;"><strong>3. 读取授权文件正文</strong></td>
+        <td style="padding: 8px; border: 1px solid #e1e4e8;"><code>GET /{portal}/{path}</code></td>
+        <td style="padding: 8px; border: 1px solid #e1e4e8;"><code>GET /{path}</code></td>
+        <td style="padding: 8px; border: 1px solid #e1e4e8;">Markdown 原文 (未授权返回403)</td>
+      </tr>
+      <tr>
+        <td style="padding: 8px; border: 1px solid #e1e4e8;"><strong>4. 回传采坑经验优化库</strong></td>
+        <td style="padding: 8px; border: 1px solid #e1e4e8;"><code>POST /{portal}/upload</code></td>
+        <td style="padding: 8px; border: 1px solid #e1e4e8;"><code>POST /upload</code></td>
+        <td style="padding: 8px; border: 1px solid #e1e4e8;">JSON 确认 (落盘至 uploads/)</td>
+      </tr>
+    </tbody>
+  </table>
 </div>
 </body>
 </html>`)
