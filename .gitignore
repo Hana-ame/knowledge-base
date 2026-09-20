@@ -1,12 +1,13 @@
-# Exclude all markdown files (private knowledge base notes & docs)
-*.md
-**/*.md
-
-# Exclude knowledge base data & portal directories
+# Exclude private knowledge base directories
 notes/
 indexes/
 portals/
 tools/
+
+# Exclude private root notes & docs, but track public README.md
+*.md
+!README.md
+!server/README.md
 
 # Exclude compiled binaries & archives
 kb-server
