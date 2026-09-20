@@ -127,7 +127,63 @@ func main() {
 		})
 	})
 
-	// 4. S3-Style Dual Routing (Domain-style & Path-style bucketing) + Root Dashboard
+	// 4. Create Portal API (Dynamic portal creation)
+	mux.HandleFunc("/api/portals/create", func(rw http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost {
+			http.Error(rw, `{"error":"Method not allowed. Use POST."}`, http.StatusMethodNotAllowed)
+			return
+		}
+		var payload struct {
+			Name     string   `json:"name"`
+			FileList []string `json:"filelist"`
+			Index    string   `json:"index"`
+			Agents   string   `json:"agents"`
+			Domain   string   `json:"domain"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			http.Error(rw, fmt.Sprintf(`{"error":"Invalid JSON: %v"}`, err), http.StatusBadRequest)
+			return
+		}
+		name := strings.TrimSpace(payload.Name)
+		if name == "" || strings.Contains(name, "/") || strings.Contains(name, "\\") || strings.Contains(name, "..") {
+			http.Error(rw, `{"error":"Invalid portal name"}`, http.StatusBadRequest)
+			return
+		}
+		targetDir := filepath.Join(absPortalsDir, name)
+		if err := os.MkdirAll(filepath.Join(targetDir, "uploads"), 0755); err != nil {
+			http.Error(rw, fmt.Sprintf(`{"error":"Failed to create portal directory: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		if len(payload.FileList) > 0 {
+			_ = os.WriteFile(filepath.Join(targetDir, "filelist.txt"), []byte(strings.Join(payload.FileList, "\n")+"\n"), 0644)
+		} else {
+			_ = os.WriteFile(filepath.Join(targetDir, "filelist.txt"), []byte("# Whitelist for "+name+"\n"), 0644)
+		}
+		if payload.Index != "" {
+			_ = os.WriteFile(filepath.Join(targetDir, "INDEX.md"), []byte(payload.Index), 0644)
+		}
+		if payload.Agents != "" {
+			_ = os.WriteFile(filepath.Join(targetDir, "AGENTS.md"), []byte(payload.Agents), 0644)
+		}
+		if payload.Domain != "" {
+			_ = os.WriteFile(filepath.Join(targetDir, "domain.txt"), []byte(payload.Domain+"\n"), 0644)
+		}
+		if err := mgr.ScanAndLoad(); err != nil {
+			log.Printf("⚠️ ScanAndLoad warning after portal create: %v", err)
+		}
+
+		rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(rw).Encode(map[string]interface{}{
+			"status":     "ok",
+			"portal":     name,
+			"message":    fmt.Sprintf("Portal '%s' created and loaded successfully.", name),
+			"entry_url":  fmt.Sprintf("/%s/", name),
+			"rag_url":    fmt.Sprintf("/%s/rag", name),
+			"upload_url": fmt.Sprintf("/%s/upload", name),
+		})
+	})
+
+	// 5. S3-Style Dual Routing (Domain-style & Path-style bucketing) + Root Dashboard
 	mux.HandleFunc("/", func(rw http.ResponseWriter, req *http.Request) {
 		// S3-style bucketing resolution
 		if portal, subPath, ok := mgr.ResolvePortalAndSubpath(req); ok {
