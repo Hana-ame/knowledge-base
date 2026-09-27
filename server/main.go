@@ -359,16 +359,26 @@ func handlePortalRequest(portal *Portal, kbRoot, subPath string, rw http.Respons
 		return
 	}
 
-	// 4. Portal Scoped Search & RAG: GET /{portal}/search?q=... or GET /{portal}/rag?q=...
+	// 4. Portal Scoped Semantic Search: GET /{portal}/search?q=... (same
+	//    semantic engine as /rag, re-checked against filelist.txt)
 	if subPath == "search" {
 		q := req.URL.Query().Get("q")
-		resp, err := SearchKB(kbRoot, portal, q, 50)
+		if strings.TrimSpace(q) == "" {
+			rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+			_ = json.NewEncoder(rw).Encode(map[string]interface{}{
+				"query":  q,
+				"engine": "code-rag (bge-m3 + rerank)",
+				"hits":   []interface{}{},
+			})
+			return
+		}
+		resp, err := RunLocalRAG(q, portal)
 		if err != nil {
 			http.Error(rw, fmt.Sprintf(`{"error":"Portal search failed: %v"}`, err), http.StatusInternalServerError)
 			return
 		}
 		rw.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_ = json.NewEncoder(rw).Encode(resp)
+		_ = json.NewEncoder(rw).Encode(resp.FilterAllowed())
 		return
 	}
 

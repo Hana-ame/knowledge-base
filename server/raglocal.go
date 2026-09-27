@@ -13,10 +13,12 @@ package main
 //	KB_RAG_TOP     number of hits per query (default 8)
 //	KB_RAG_TIMEOUT subprocess timeout seconds (default 45)
 //
-// If the script is missing or fails, the caller decides: SearchKB (substring)
-// remains available for /search, but /rag and /api/search report the failure
-// explicitly instead of silently degrading (same philosophy as code-rag: no
-// fallback to BM25 when embedding is unavailable).
+// If the script is missing or fails, /rag, /search and /api/search report the
+// failure explicitly instead of silently degrading (same philosophy as
+// code-rag: no fallback to BM25 / substring scan when embedding is
+// unavailable). The old per-line substring walker (SearchKB) was removed —
+// it is a banned approach: it re-reads every file on every request, is
+// O(KB size) per query, and cannot do semantic matching.
 
 import (
 	"bufio"

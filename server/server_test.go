@@ -164,28 +164,59 @@ func TestSearchGlobalAndScoped(t *testing.T) {
 	_ = mgr.ScanAndLoad()
 	portal, _ := mgr.GetPortal("agent-public")
 
-	globalResp, err := SearchKB(kbRoot, nil, "confidential", 10)
+	// Semantic search now shells out to code-rag. A fake script claims both
+	// notes/public.md and notes/secret.md match. Global search must surface
+	// both; portal-scoped search must hide secret.md (filelist.txt gate).
+	fakeScript := filepath.Join(t.TempDir(), "fake-search.sh")
+	fakeOut := `语义检索「confidential」[kb] · rerank 精排（召回 100 → top 2）
+
+1. [kb-notes·kb] section secret
+   secret.md:2  score=0.9000 (rerank) –3
+   ─ 文档 ─
+     # Secret Knowledge
+   This is confidential internal data.
+
+2. [kb-notes·kb] section public
+   public.md:2  score=0.8000 (rerank) –4
+   ─ 文档 ─
+     # Public Knowledge
+   This is public knowledge about AI agents.
+`
+	_ = os.WriteFile(fakeScript, []byte("#!/usr/bin/env bash\ncat <<'EOF'\n"+fakeOut+"EOF\n"), 0755)
+	t.Setenv("KB_RAG_SCRIPT", fakeScript)
+
+	// Global: both files surface.
+	globalResp, err := RunLocalRAG("confidential", nil)
 	if err != nil {
-		t.Fatalf("SearchKB global error: %v", err)
+		t.Fatalf("RunLocalRAG global error: %v", err)
 	}
-	if globalResp.TotalLines == 0 {
-		t.Errorf("expected global search to find 'confidential' in secret.md")
+	foundSecret := false
+	foundPublic := false
+	for _, h := range globalResp.Hits {
+		if h.KbRelPath == "notes/secret.md" {
+			foundSecret = true
+		}
+		if h.KbRelPath == "notes/public.md" {
+			foundPublic = true
+		}
+	}
+	if !foundSecret || !foundPublic {
+		t.Errorf("global search should surface both files, secret=%v public=%v", foundSecret, foundPublic)
 	}
 
-	scopedResp, err := SearchKB(kbRoot, portal, "confidential", 10)
+	// Scoped: only public.md passes the whitelist.
+	scopedResp, err := RunLocalRAG("confidential", portal)
 	if err != nil {
-		t.Fatalf("SearchKB scoped error: %v", err)
+		t.Fatalf("RunLocalRAG scoped error: %v", err)
 	}
-	if scopedResp.TotalLines != 0 {
-		t.Errorf("expected portal search NOT to reveal matches from secret.md, got %d", scopedResp.TotalLines)
+	scoped := scopedResp.FilterAllowed()
+	for _, h := range scoped.Hits {
+		if h.KbRelPath == "notes/secret.md" {
+			t.Errorf("portal search MUST NOT reveal secret.md, got %+v", h)
+		}
 	}
-
-	publicResp, err := SearchKB(kbRoot, portal, "Public", 10)
-	if err != nil {
-		t.Fatalf("SearchKB public error: %v", err)
-	}
-	if publicResp.TotalLines == 0 {
-		t.Errorf("expected portal search to find 'Public' in notes/public.md")
+	if len(scoped.Hits) == 0 {
+		t.Errorf("portal search should surface notes/public.md")
 	}
 }
 
