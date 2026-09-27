@@ -68,12 +68,23 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// 1. Global Search API: searches the entire master KB once
+	// 1. Global Search API: real semantic RAG over the whole KB via local
+	//    code-rag (bge-m3 + rerank). Instant (indexed), no 25k-file walk.
 	mux.HandleFunc("/api/search", func(rw http.ResponseWriter, req *http.Request) {
 		q := req.URL.Query().Get("q")
-		resp, err := SearchKB(absKBRoot, nil, q, 100)
+		if strings.TrimSpace(q) == "" {
+			rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+			_ = json.NewEncoder(rw).Encode(map[string]interface{}{
+				"query":  q,
+				"engine": "code-rag (bge-m3 + rerank)",
+				"hits":   []interface{}{},
+				"error":  "empty query",
+			})
+			return
+		}
+		resp, err := RunLocalRAG(q, nil)
 		if err != nil {
-			http.Error(rw, fmt.Sprintf(`{"error":"Search failed: %v"}`, err), http.StatusInternalServerError)
+			http.Error(rw, fmt.Sprintf(`{"error":"Semantic search failed: %v"}`, err), http.StatusInternalServerError)
 			return
 		}
 		rw.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -370,21 +381,23 @@ func handlePortalRequest(portal *Portal, kbRoot, subPath string, rw http.Respons
 			return
 		}
 
-		// Strictly retrieves snippets ONLY from files listed in filelist.txt
-		ragResp, err := RAGSearch(kbRoot, portal, q, 30)
+		// Semantic RAG via local code-rag (bge-m3 + rerank), then re-checked
+		// against filelist.txt so the privacy gate is never bypassed.
+		ragResp, err := RunLocalRAG(q, portal)
 		if err != nil {
 			http.Error(rw, fmt.Sprintf(`{"error":"RAG search failed: %v"}`, err), http.StatusInternalServerError)
 			return
 		}
+		filtered := ragResp.FilterAllowed()
 
 		if req.URL.Query().Get("format") == "json" || strings.Contains(req.Header.Get("Accept"), "application/json") {
 			rw.Header().Set("Content-Type", "application/json; charset=utf-8")
-			_ = json.NewEncoder(rw).Encode(ragResp)
+			_ = json.NewEncoder(rw).Encode(filtered)
 			return
 		}
 
 		rw.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-		_, _ = rw.Write([]byte(ragResp.ContextText))
+		_, _ = rw.Write([]byte(filtered.BuildContextText()))
 		return
 	}
 

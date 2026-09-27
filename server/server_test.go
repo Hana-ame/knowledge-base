@@ -244,18 +244,39 @@ func TestDirectPathAndRAGStrictBoundary(t *testing.T) {
 		t.Errorf("expected 403 Forbidden for path not in filelist.txt, got %d", wDirectForbidden.Code)
 	}
 
-	// 3. RAG endpoint: query matching unexposed file MUST return 0 results
+	// 3-4. RAG endpoint now shells out to the local semantic search
+	// (code-rag bge-m3 + rerank). We point KB_RAG_SCRIPT at a fake script
+	// whose output claims BOTH notes/public.md and notes/secret.md match the
+	// query. The portal boundary must still hide secret.md: semantic
+	// retrieval is real, but filelist.txt is the hard gate.
+	fakeScript := filepath.Join(t.TempDir(), "fake-rag.sh")
+	fakeOut := `语义检索「agents」[kb] · rerank 精排（召回 100 → top 2）
+
+1. [kb-notes·kb] section public
+   public.md:2  score=0.9500 (rerank) –4
+   ─ 文档 ─
+     # Public Knowledge
+   This is public knowledge about AI agents.
+
+2. [kb-notes·kb] section secret
+   secret.md:2  score=0.9000 (rerank) –3
+   ─ 文档 ─
+     # Secret Knowledge
+   This is confidential internal data.
+`
+	_ = os.WriteFile(fakeScript, []byte("#!/usr/bin/env bash\ncat <<'EOF'\n"+fakeOut+"EOF\n"), 0755)
+	t.Setenv("KB_RAG_SCRIPT", fakeScript)
+
 	reqRAGSecret := httptest.NewRequest("GET", "/agent-public/rag?q=confidential", nil)
 	wRAGSecret := httptest.NewRecorder()
 	handlePortalRequest(portal, kbRoot, "rag", wRAGSecret, reqRAGSecret)
 	if wRAGSecret.Code != http.StatusOK {
 		t.Errorf("expected 200 OK for RAG search, got %d", wRAGSecret.Code)
 	}
-	if strings.Contains(wRAGSecret.Body.String(), "secret.md") {
-		t.Errorf("RAG MUST NOT expose content from secret.md")
+	if strings.Contains(wRAGSecret.Body.String(), "notes/secret.md") {
+		t.Errorf("RAG MUST NOT expose content from secret.md, got: %s", wRAGSecret.Body.String())
 	}
 
-	// 4. RAG endpoint: query matching exposed file returns context text
 	reqRAGPublic := httptest.NewRequest("GET", "/agent-public/rag?q=agents", nil)
 	wRAGPublic := httptest.NewRecorder()
 	handlePortalRequest(portal, kbRoot, "rag", wRAGPublic, reqRAGPublic)
@@ -264,6 +285,9 @@ func TestDirectPathAndRAGStrictBoundary(t *testing.T) {
 	}
 	if !strings.Contains(wRAGPublic.Body.String(), "notes/public.md") {
 		t.Errorf("RAG expected to include notes/public.md, got: %s", wRAGPublic.Body.String())
+	}
+	if strings.Contains(wRAGPublic.Body.String(), "notes/secret.md") {
+		t.Errorf("RAG MUST NOT expose secret.md even when semantically retrieved, got: %s", wRAGPublic.Body.String())
 	}
 }
 
