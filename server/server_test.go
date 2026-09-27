@@ -357,3 +357,24 @@ func TestS3DualBucketingDomainAndPath(t *testing.T) {
 		t.Errorf("Domain-style custom domain resolution failed: ok=%v, portal=%v, subpath=%s", okC, portalC, subPathC)
 	}
 }
+
+func TestIsLoopback(t *testing.T) {
+	cases := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:8080", true},
+		{"127.0.0.1:52341", true},
+		{"[::1]:8080", true},
+		{"localhost:8080", true},
+		{"::1", true},
+		{"172.29.89.192:8080", false},
+		{"10.0.0.5:9000", false},
+		{"192.168.1.10:1234", false},
+	}
+	for _, c := range cases {
+		if got := isLoopback(c.addr); got != c.want {
+			t.Errorf("isLoopback(%q) = %v, want %v", c.addr, got, c.want)
+		}
+	}
+}

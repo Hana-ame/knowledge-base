@@ -5,12 +5,28 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
+
+// isLoopback reports whether a RemoteAddr (host:port) comes from a loopback
+// interface. Used to gate non-whitelist-scoped endpoints (global /api/search).
+func isLoopback(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	host = strings.Trim(host, "[]")
+	if host == "localhost" || host == "" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
 func main() {
 	portFlag := flag.Int("port", 8080, "Port to listen on")
@@ -70,7 +86,15 @@ func main() {
 
 	// 1. Global Search API: real semantic RAG over the whole KB via local
 	//    code-rag (bge-m3 + rerank). Instant (indexed), no 25k-file walk.
+	//    Privacy: global search is NOT whitelist-scoped, so it is restricted
+	//    to loopback clients by default. Set KB_SEARCH_GLOBAL_ALLOWED=1 to
+	//    expose it to non-loopback callers (you are then publishing semantic
+	//    access to the ENTIRE KB, including non-whitelisted nodes).
 	mux.HandleFunc("/api/search", func(rw http.ResponseWriter, req *http.Request) {
+		if os.Getenv("KB_SEARCH_GLOBAL_ALLOWED") != "1" && !isLoopback(req.RemoteAddr) {
+			http.Error(rw, `{"error":"Forbidden","message":"global /api/search is loopback-only; set KB_SEARCH_GLOBAL_ALLOWED=1 to enable remote access"}`, http.StatusForbidden)
+			return
+		}
 		q := req.URL.Query().Get("q")
 		if strings.TrimSpace(q) == "" {
 			rw.Header().Set("Content-Type", "application/json; charset=utf-8")
